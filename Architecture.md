@@ -1,53 +1,108 @@
-High-Level Architecture (Textual)
-User
- |
- |  (HTTP)
- v
-Istio Ingress Gateway
- |
- |---- frontend (UI / API client)
- |
- |---- backend-api
-         |
-         |---- users-service
-         |---- orders-service
-         |---- payments-service
-         |
-         |---- ai-diagnostics-service
-                  |
-                  |---- Kubernetes API (read-only)
-                  |---- Prometheus API
+# System Architecture
 
-Technology Stack
-Core Platform
+## Overview
 
-Kubernetes (kubeadm)
+This platform implements a layered architecture that separates concerns between infrastructure management, application services, observability, and intelligent diagnostics. The design emphasizes resilience, security, and operational visibility.
 
-Calico CNI
+## Architecture Layers
 
-Helm
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      User / Operator                        │
+└────────────────────┬────────────────────────────────────────┘
+                     │ HTTP/HTTPS
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 Istio Ingress Gateway                       │
+│              (mTLS, Traffic Management)                     │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+        ┌────────────┴────────────┐
+        │                         │
+        ▼                         ▼
+┌──────────────┐        ┌──────────────────┐
+│  Frontend    │        │   Backend API    │
+│  (Web UI)    │        │  (Aggregation)   │
+└──────────────┘        └────────┬─────────┘
+                                 │
+                  ┌──────────────┼──────────────┐
+                  │              │              │
+                  ▼              ▼              ▼
+          ┌─────────────┐ ┌────────────┐ ┌────────────┐
+          │   Users      │ │  Orders    │ │  Payments  │
+          │  Service     │ │  Service   │ │  Service   │
+          └─────────────┘ └────────────┘ └────────────┘
 
-Service Mesh
+┌─────────────────────────────────────────────────────────────┐
+│              AI Diagnostics Service                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐      │
+│  │ Kubernetes   │  │ Prometheus   │  │  Analysis   │      │
+│  │ API Client   │──┤ API Client   │──┤  Engine     │      │
+│  │ (Read-Only)  │  │              │  │ (Rules)     │      │
+│  └──────────────┘  └──────────────┘  └─────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+                     │              │
+                     ▼              ▼
+          ┌─────────────────────────────────────┐
+          │    Observability Stack              │
+          │  ┌──────────┐    ┌──────────┐      │
+          │  │Prometheus│    │ Grafana  │      │
+          │  │  Server  │────┤Dashboards│      │
+          │  └──────────┘    └──────────┘      │
+          └─────────────────────────────────────┘
+```
 
-Istio (minimal profile)
+## Technology Stack
 
-mTLS enabled
+### Infrastructure Layer
 
-Traffic retries and timeouts
+**Kubernetes v1.28.15 (kubeadm)**
+- Multi-node cluster configuration (1 control-plane + 2 workers)
+- Custom resource limits and quality-of-service policies
+- RBAC for fine-grained access control
 
-Observability
+**Calico CNI v3.27.2**
+- Network policy enforcement
+- Pod-to-pod communication with IP-in-IP encapsulation
+- Custom health check configuration for DNS reliability
 
-Prometheus
+**Helm 3**
+- Templated deployments for consistency
+- Version-controlled configuration management
+- Rollback capabilities
 
-Grafana
+### Service Mesh Layer
 
-Kubernetes events
+**Istio (Minimal Profile)**
+- **Security**: Mutual TLS authentication for all service-to-service communication
+- **Traffic Management**: Weighted routing for canary deployments (90/10 split)
+- **Resilience**: Automatic retries (3 attempts), circuit breakers, and connection pooling
+- **Observability**: Distributed tracing readiness and metrics collection
 
-Istio telemetry
+### Observability Layer
 
-AI & Automation
+**Prometheus**
+- 28 active scrape targets across cluster components
+- Custom recording rules for common queries
+- 6-hour retention with ephemeral storage optimization
+- Integration with Kubernetes service discovery
 
-Python-based AI service
+**Grafana**
+- 27 pre-configured dashboards for cluster visibility
+- Direct ClusterIP datasource connectivity (avoiding DNS overhead)
+- Resource usage tracking and alerting capabilities
+
+**Kubernetes Events**
+- Real-time event streaming for diagnostic correlation
+- Field selectors for targeted event queries
+
+### Intelligence Layer
+
+**AI Diagnostics Service (Python/FastAPI)**
+- **Analysis Engine**: Rule-based decision tree for incident classification
+- **Data Collection**: Parallel queries to Kubernetes and Prometheus APIs
+- **Confidence Scoring**: Evidence-weighted probability calculations
+- **API Design**: RESTful endpoints with structured JSON responses
 
 Local LLM (CPU-only)
 

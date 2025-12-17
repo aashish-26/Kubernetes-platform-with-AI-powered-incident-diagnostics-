@@ -1,0 +1,39 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-diagnostics
+  namespace: ai
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ai-diagnostics-read
+rules:
+- apiGroups: [""]
+  resources: ["pods","pods/log","events","namespaces"]
+  verbs: ["get","list","watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments","statefulsets","daemonsets"]
+  verbs: ["get","list"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get","list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ai-diagnostics-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ai-diagnostics-read
+subjects:
+- kind: ServiceAccount
+  name: ai-diagnostics
+  namespace: ai

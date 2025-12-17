@@ -1,0 +1,79 @@
+# TODO: Configure AI diagnostics service deployment parameters
+#
+# What to include in this file:
+# - Replica count (usually 1-2 for AI services)
+# - Container image for AI service
+# - Resource limits (AI services need more memory/CPU)
+# - Environment variables (API keys, model configs, K8s API access)
+# - Service configuration (ports, type)
+# - Persistent storage for models/cache (if needed)
+# - RBAC permissions for Kubernetes API access
+# - Prometheus/metrics endpoints configuration
+
+replicaCount: 1
+
+image:
+  repository: ai-diagnostics  # Replace with your actual AI service image
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# AI services resource limits (must stay under 300Mi per Phase 2)
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 250m
+    memory: 128Mi
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+
+env:
+  - name: LOG_LEVEL
+    value: "info"
+  - name: PROMETHEUS_URL
+    value: "http://prometheus-server:9090"
+  - name: K8S_IN_CLUSTER
+    value: "true"
+  # Add AI model configuration
+  # - name: OPENAI_API_KEY
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: ai-secrets
+  #       key: openai-api-key
+
+# Service account for Kubernetes API access
+serviceAccount:
+  create: true
+  name: ai-diagnostics-sa
+
+# RBAC permissions
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "services", "events", "nodes"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apps"]
+      resources: ["deployments", "replicasets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["metrics.k8s.io"]
+      resources: ["pods", "nodes"]
+      verbs: ["get", "list"]
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5

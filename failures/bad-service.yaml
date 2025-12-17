@@ -1,0 +1,74 @@
+# TODO: Create a broken service selector failure scenario
+#
+# What to include in this file:
+# - Deployment with specific pod labels
+# - Service with mismatched selector (typo or wrong label)
+# - Comments explaining the failure mechanism
+# - Expected behavior (no endpoints)
+#
+# Use this to test:
+# - AI diagnostics detection of label mismatches
+# - Service endpoint verification
+# - Network connectivity issues
+# - Configuration validation recommendations
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-service-test
+  namespace: default
+  labels:
+    app: broken-service-test
+    scenario: failure
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend  # Correct label
+  template:
+    metadata:
+      labels:
+        app: backend  # Correct label
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: broken-service-test
+  namespace: default
+  labels:
+    app: broken-service-test
+    scenario: failure
+spec:
+  selector:
+    app: backend-wrong  # BROKEN: Typo in selector, no pods will match
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+
+# Expected Outcome:
+# - Service has no endpoints
+# - kubectl get endpoints broken-service-test shows no IPs
+# - Traffic to service fails
+# - AI diagnostics should detect selector mismatch
+# - Recommendation: Fix selector to match pod labels
+
+# Debug Commands:
+# kubectl get pods -l app=backend
+# kubectl get endpoints broken-service-test
+# kubectl describe service broken-service-test

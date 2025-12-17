@@ -1,0 +1,73 @@
+# TODO: Create an OOM (Out of Memory) failure scenario
+#
+# What to include in this file:
+# - Deployment with intentionally low memory limits
+# - Container that allocates excessive memory
+# - Proper labels for identification
+# - Comments explaining the failure mechanism
+# - Expected behavior (OOMKilled status)
+#
+# Use this to test:
+# - AI diagnostics detection of OOM conditions
+# - HPA behavior under memory pressure
+# - Prometheus alerting rules
+# - Resource limit recommendations
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-test
+  namespace: default
+  labels:
+    app: oom-test
+    scenario: failure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-test
+  template:
+    metadata:
+      labels:
+        app: oom-test
+        scenario: failure
+    spec:
+      containers:
+      - name: memory-hog
+        image: polinux/stress
+        resources:
+          limits:
+            memory: "128Mi"  # Intentionally low
+            cpu: "200m"
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+        command:
+        - stress
+        args:
+        - --vm
+        - "1"
+        - --vm-bytes
+        - "256M"  # Request more than limit (256M > 128M)
+        - --vm-hang
+        - "0"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oom-test
+  namespace: default
+spec:
+  selector:
+    app: oom-test
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+
+# Expected Outcome:
+# - Pod will be OOMKilled repeatedly
+# - Status: CrashLoopBackOff
+# - Events will show "OOMKilled" reason
+# - AI diagnostics should detect memory limit too low

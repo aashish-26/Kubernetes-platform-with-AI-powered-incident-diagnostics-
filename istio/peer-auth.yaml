@@ -1,0 +1,51 @@
+# TODO: Configure Istio mTLS (mutual TLS) settings
+#
+# What to include in this file:
+# - PeerAuthentication resource for namespace or mesh-wide mTLS
+# - mTLS mode (STRICT, PERMISSIVE, DISABLE)
+# - Port-level mTLS configuration
+# - Exceptions for specific workloads (if needed)
+# - Migration strategy from plaintext to mTLS
+
+# Istio mTLS Configuration
+# This enables mutual TLS authentication between services
+
+---
+# Mesh-wide mTLS declared in control namespace; keep STRICT
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT  # Options: STRICT, PERMISSIVE, DISABLE
+
+---
+# Namespace-specific mTLS for apps
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: apps
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Workload-specific mTLS (example, keep as reference only)
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: app-mtls
+  namespace: apps
+spec:
+  selector:
+    matchLabels:
+      app: microservices-app
+  mtls:
+    mode: STRICT
+  # Port-level mTLS override
+  portLevelMtls:
+    8080:
+      mode: PERMISSIVE  # Allow both mTLS and plaintext on this port

@@ -1,0 +1,632 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-code
+  namespace: ai
+  labels:
+    app: ai-diagnostics
+    phase: "7-ai-diagnostics"
+data:
+  __init__.py: |
+    
+  app.py: |
+    """
+    AI Diagnostics Service - FastAPI entrypoint
+
+    Exposes deterministic diagnostics over HTTP. No external cloud calls.
+
+    Endpoints:
+    - POST /ask  : analyze a pod/service
+    - GET  /health
+    - GET  /ready
+    """
+
+    import logging
+    import os
+    from typing import List, Optional
+
+    from fastapi import FastAPI, HTTPException
+    from pydantic import BaseModel, Field
+
+    from .agent import AIAgent
+
+
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    logger = logging.getLogger("ai-diagnostics")
+
+    app = FastAPI(title="AI Diagnostics Service", version="1.0.0")
+
+    agent = AIAgent()
+
+
+    class AskRequest(BaseModel):
+        namespace: str = Field(..., example="apps")
+        pod_name: Optional[str] = Field(None, example="backend-api-abc123")
+        service_name: Optional[str] = Field(None, example="backend-api")
+        include_logs: bool = Field(False, description="Tail pod logs (120 lines)")
+
+
+    class AskResponse(BaseModel):
+        summary: str
+        root_cause: str
+        recommendations: List[str]
+        confidence: float
+        evidence: dict
+
+
+    @app.post("/ask", response_model=AskResponse)
+    async def ask(req: AskRequest):
+        try:
+            result = agent.analyze_incident(
+                namespace=req.namespace,
+                pod_name=req.pod_name,
+                service_name=req.service_name,
+                include_logs=req.include_logs,
+            )
+            return AskResponse(
+                summary=result.summary,
+                root_cause=result.root_cause,
+                recommendations=result.recommendations,
+                confidence=result.confidence,
+                evidence=result.evidence,
+            )
+        except Exception as e:
+            logger.exception("Error analyzing incident")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+
+    @app.get("/ready")
+    async def ready():
+        try:
+            _ = agent.k8s.get_pods(namespace="kube-system")
+            return {"status": "ready"}
+        except Exception as e:
+            logger.error(f"Readiness check failed: {e}")
+            raise HTTPException(status_code=503, detail="Dependencies not ready")
+
+
+    if __name__ == "__main__":
+        import uvicorn
+
+        uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+  agent.py: |
+    """
+    AI Agent - rule-backed diagnostics with tool calls
+
+    This agent is deterministic and avoids hallucinations. It gathers facts
+    from Kubernetes (pods, events, logs) and Prometheus (CPU, memory, restarts)
+    then applies heuristics to explain likely causes and safe next steps.
+    """
+
+    from dataclasses import dataclass
+    from typing import Dict, List, Optional, Tuple
+    import logging
+
+    from .k8s_client import K8sClient
+    from .prometheus_client import PrometheusClient
+
+    logger = logging.getLogger(__name__)
+
+
+    @dataclass
+    class AnalysisResult:
+        summary: str
+        root_cause: str
+        recommendations: List[str]
+        confidence: float
+        evidence: Dict
+
+
+    class AIAgent:
+        """Diagnostic agent orchestrating K8s + Prometheus lookups."""
+
+        def __init__(self, lookback_minutes: int = 15):
+            self.k8s = K8sClient()
+            self.prom = PrometheusClient()
+            self.lookback_minutes = lookback_minutes
+
+        def analyze_incident(
+            self,
+            namespace: str,
+            pod_name: Optional[str] = None,
+            service_name: Optional[str] = None,
+            include_logs: bool = False,
+        ) -> AnalysisResult:
+            """Main diagnostic entry point."""
+
+            evidence: Dict = {
+                "pods": [],
+                "pod_status": None,
+                "events": [],
+                "logs": None,
+                "metrics": {},
+            }
+
+            pods = self.k8s.get_pods(namespace)
+            evidence["pods"] = pods
+
+            target_pod = self._pick_target_pod(pods, pod_name, service_name)
+            if not target_pod:
+                msg = "No matching pod found"
+                logger.warning(msg)
+                return AnalysisResult(
+                    summary=f"Namespace '{namespace}': {msg}.",
+                    root_cause="unknown",
+                    recommendations=["Confirm pod/service name and namespace"],
+                    confidence=0.3,
+                    evidence=evidence,
+                )
+
+            pod_status = self.k8s.get_pod_status(namespace, target_pod)
+            evidence["pod_status"] = pod_status
+
+            events = self.k8s.get_events(namespace, field_selector=f"involvedObject.name={target_pod}")
+            evidence["events"] = events
+
+            metrics = self._collect_metrics(namespace, target_pod)
+            evidence["metrics"] = metrics
+
+            if include_logs:
+                evidence["logs"] = self.k8s.get_logs(namespace, target_pod, tail_lines=120)
+
+            summary, root_cause, recs, confidence = self._reason(pod_status, events, metrics)
+
+            return AnalysisResult(
+                summary=summary,
+                root_cause=root_cause,
+                recommendations=recs,
+                confidence=confidence,
+                evidence=evidence,
+            )
+
+        def _pick_target_pod(self, pods: List[Dict], pod_name: Optional[str], service_name: Optional[str]) -> Optional[str]:
+            if pod_name:
+                for p in pods:
+                    if p["name"] == pod_name:
+                        return pod_name
+            if service_name:
+                for p in pods:
+                    if p["name"].startswith(service_name):
+                        return p["name"]
+            if pods:
+                return sorted(pods, key=lambda x: x.get("created", ""))[-1]["name"]
+            return None
+
+        def _collect_metrics(self, namespace: str, pod_name: str) -> Dict:
+            return {
+                "cpu_m": self.prom.get_pod_cpu_usage(namespace, pod_name),
+                "mem_mb": self.prom.get_pod_memory_usage(namespace, pod_name),
+                "restarts": self.prom.get_pod_restarts(namespace, pod_name),
+                "ooms": self.prom.check_oom_kills(namespace),
+            }
+
+        def _reason(
+            self,
+            pod_status: Optional[Dict],
+            events: List[Dict],
+            metrics: Dict,
+        ) -> Tuple[str, str, List[str], float]:
+            if not pod_status:
+                return (
+                    "Pod not found or unreachable.",
+                    "unknown",
+                    ["Verify pod exists and kubeconfig access"],
+                    0.3,
+                )
+
+            recs: List[str] = []
+            root_cause = "unknown"
+            confidence = 0.55
+
+            phase = pod_status.get("phase")
+            containers = pod_status.get("containers", [])
+            warnings = [e for e in events if e.get("type") == "Warning"]
+            restarts = metrics.get("restarts")
+            ooms = metrics.get("ooms", [])
+
+            if phase != "Running":
+                root_cause = f"pod in phase {phase}"
+                recs.append("Describe pod to inspect detailed status and conditions")
+                confidence = 0.65
+
+            for c in containers:
+                state = c.get("state")
+                if state == "waiting":
+                    reason = c.get("reason", "waiting")
+                    root_cause = f"container waiting: {reason}"
+                    recs.append("Check image pull/auth and recent deploy changes")
+                    confidence = 0.7
+                if state == "terminated":
+                    reason = c.get("reason", "terminated")
+                    root_cause = f"container terminated: {reason}"
+                    recs.append("Inspect container logs around termination time")
+                    confidence = 0.7
+
+            if warnings:
+                top = warnings[0]
+                root_cause = f"event: {top.get('reason')} - {top.get('message')}"
+                recs.append("Address the latest Warning event cause")
+                confidence = 0.72
+
+            if ooms:
+                root_cause = "oom_killed"
+                recs.append("Increase memory limit (within 300Mi cap) or reduce footprint")
+                recs.append("Check memory leaks or traffic spikes")
+                confidence = 0.78
+
+            if restarts is not None and restarts > 2:
+                recs.append(f"High restarts detected ({restarts}); inspect logs and readiness probes")
+                confidence = max(confidence, 0.7)
+
+            cpu_m = metrics.get("cpu_m")
+            mem_mb = metrics.get("mem_mb")
+            if cpu_m and cpu_m > 400:
+                recs.append("CPU >400m; consider throttling or scale out")
+            if mem_mb and mem_mb > 220:
+                recs.append("Memory >220Mi; nearing 256Mi cap; watch for OOM")
+
+            summary_parts = [
+                f"Phase: {phase}",
+                f"Warnings: {len(warnings)}",
+                f"Restarts: {restarts if restarts is not None else 'n/a'}",
+                f"CPU(m): {cpu_m if cpu_m is not None else 'n/a'}",
+                f"Mem(Mi): {mem_mb if mem_mb is not None else 'n/a'}",
+            ]
+
+            summary = "; ".join(summary_parts)
+
+            if not recs:
+                recs.append("No critical signals found; continue monitoring and check recent deploys")
+                confidence = 0.5
+
+            return summary, root_cause, recs, round(confidence, 2)
+  k8s_client.py: |
+    """
+    Kubernetes API Client
+
+    This module provides a read-only wrapper around the Kubernetes Python client
+    for AI diagnostics and incident analysis.
+
+    Functions:
+    - get_pods(namespace) - List all pods in namespace
+    - get_pod_status(namespace, pod_name) - Get detailed pod status
+    - get_logs(namespace, pod_name, tail_lines) - Get pod logs
+    - get_events(namespace, field_selector) - Get events for resources
+    """
+
+    from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
+    import logging
+    import os
+    from typing import List, Dict, Optional
+
+    logger = logging.getLogger(__name__)
+
+
+    class K8sClient:
+        def __init__(self):
+            """Initialize Kubernetes client (read-only)"""
+            try:
+                if os.getenv('K8S_IN_CLUSTER', 'false').lower() == 'true':
+                    config.load_incluster_config()
+                    logger.info("Loaded in-cluster Kubernetes config")
+                else:
+                    config.load_kube_config()
+                    logger.info("Loaded kubeconfig from filesystem")
+                
+                self.core_v1 = client.CoreV1Api()
+                self.apps_v1 = client.AppsV1Api()
+                logger.info("Kubernetes client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize K8s client: {e}")
+                raise
+        
+        def get_pods(self, namespace: str = "default") -> List[Dict]:
+            """
+            List all pods in a namespace
+            
+            Args:
+                namespace: Kubernetes namespace
+                
+            Returns:
+                List of pod information dictionaries
+            """
+            try:
+                pods = self.core_v1.list_namespaced_pod(namespace)
+                result = []
+                for pod in pods.items:
+                    pod_info = {
+                        'name': pod.metadata.name,
+                        'namespace': pod.metadata.namespace,
+                        'phase': pod.status.phase,
+                        'ready': self._is_pod_ready(pod),
+                        'restarts': self._get_restart_count(pod),
+                        'node': pod.spec.node_name,
+                        'created': pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else None
+                    }
+                    result.append(pod_info)
+                
+                logger.info(f"Listed {len(result)} pods in namespace {namespace}")
+                return result
+            except ApiException as e:
+                logger.error(f"Error listing pods in namespace {namespace}: {e}")
+                return []
+        
+        def get_pod_status(self, namespace: str, pod_name: str) -> Optional[Dict]:
+            """
+            Get detailed status of a specific pod
+            
+            Args:
+                namespace: Kubernetes namespace
+                pod_name: Name of the pod
+                
+            Returns:
+                Detailed pod status dictionary or None
+            """
+            try:
+                pod = self.core_v1.read_namespaced_pod(pod_name, namespace)
+                
+                container_statuses = []
+                if pod.status.container_statuses:
+                    for c in pod.status.container_statuses:
+                        state_info = {}
+                        if c.state.running:
+                            state_info = {'state': 'running', 'started_at': c.state.running.started_at.isoformat() if c.state.running.started_at else None}
+                        elif c.state.waiting:
+                            state_info = {'state': 'waiting', 'reason': c.state.waiting.reason, 'message': c.state.waiting.message}
+                        elif c.state.terminated:
+                            state_info = {
+                                'state': 'terminated',
+                                'reason': c.state.terminated.reason,
+                                'exit_code': c.state.terminated.exit_code,
+                                'message': c.state.terminated.message
+                            }
+                        
+                        container_statuses.append({
+                            'name': c.name,
+                            'ready': c.ready,
+                            'restart_count': c.restart_count,
+                            **state_info
+                        })
+                
+                pod_info = {
+                    'name': pod.metadata.name,
+                    'namespace': pod.metadata.namespace,
+                    'phase': pod.status.phase,
+                    'conditions': [{'type': c.type, 'status': c.status, 'reason': c.reason} for c in pod.status.conditions] if pod.status.conditions else [],
+                    'containers': container_statuses,
+                    'node': pod.spec.node_name,
+                    'qos_class': pod.status.qos_class,
+                    'created': pod.metadata.creation_timestamp.isoformat() if pod.metadata.creation_timestamp else None
+                }
+                
+                logger.info(f"Retrieved status for pod {pod_name} in namespace {namespace}")
+                return pod_info
+            except ApiException as e:
+                logger.error(f"Error getting pod status for {pod_name}: {e}")
+                return None
+        
+        def get_logs(self, namespace: str, pod_name: str, tail_lines: int = 100, container: Optional[str] = None) -> Optional[str]:
+            """
+            Get logs from a pod
+            
+            Args:
+                namespace: Kubernetes namespace
+                pod_name: Name of the pod
+                tail_lines: Number of lines to retrieve from end
+                container: Specific container name (if multi-container pod)
+                
+            Returns:
+                Pod logs as string or None
+            """
+            try:
+                kwargs = {
+                    'name': pod_name,
+                    'namespace': namespace,
+                    'tail_lines': tail_lines
+                }
+                if container:
+                    kwargs['container'] = container
+                    
+                logs = self.core_v1.read_namespaced_pod_log(**kwargs)
+                logger.info(f"Retrieved {tail_lines} lines of logs for pod {pod_name}")
+                return logs
+            except ApiException as e:
+                logger.error(f"Error getting logs for pod {pod_name}: {e}")
+                return None
+        
+        def get_events(self, namespace: str, field_selector: Optional[str] = None) -> List[Dict]:
+            """
+            Get events for a namespace or specific resource
+            
+            Args:
+                namespace: Kubernetes namespace
+                field_selector: Optional field selector (e.g., 'involvedObject.name=mypod')
+                
+            Returns:
+                List of event dictionaries
+            """
+            try:
+                kwargs = {'namespace': namespace}
+                if field_selector:
+                    kwargs['field_selector'] = field_selector
+                    
+                events = self.core_v1.list_namespaced_event(**kwargs)
+                result = []
+                
+                for event in sorted(events.items, key=lambda e: e.last_timestamp or e.event_time, reverse=True):
+                    event_info = {
+                        'type': event.type,
+                        'reason': event.reason,
+                        'message': event.message,
+                        'object': f"{event.involved_object.kind}/{event.involved_object.name}",
+                        'count': event.count,
+                        'first_seen': event.first_timestamp.isoformat() if event.first_timestamp else None,
+                        'last_seen': event.last_timestamp.isoformat() if event.last_timestamp else None
+                    }
+                    result.append(event_info)
+                
+                logger.info(f"Retrieved {len(result)} events from namespace {namespace}")
+                return result[:50]
+            except ApiException as e:
+                logger.error(f"Error getting events: {e}")
+                return []
+        
+        def _is_pod_ready(self, pod) -> bool:
+            """Check if pod is ready"""
+            if not pod.status.conditions:
+                return False
+            for condition in pod.status.conditions:
+                if condition.type == 'Ready':
+                    return condition.status == 'True'
+            return False
+        
+        def _get_restart_count(self, pod) -> int:
+            """Get total restart count for pod"""
+            if not pod.status.container_statuses:
+                return 0
+            return sum(c.restart_count for c in pod.status.container_statuses)
+  prometheus_client.py: |
+    """
+    Prometheus API Client
+
+    This module provides a client for querying Prometheus metrics
+    to support AI-powered diagnostics.
+
+    Functions:
+    - query(promql) - Execute instant PromQL query
+    - get_pod_cpu_usage(namespace, pod_name) - Get CPU usage
+    - get_pod_memory_usage(namespace, pod_name) - Get memory usage
+    - get_pod_restarts(namespace, pod_name) - Get restart count
+    """
+
+    import requests
+    from datetime import datetime, timedelta
+    import logging
+    from typing import Dict, List, Optional, Any
+
+    logger = logging.getLogger(__name__)
+
+
+    class PrometheusClient:
+        def __init__(self, base_url: str = "http://prometheus-stack-kube-prom-prometheus.monitoring:9090"):
+            self.base_url = base_url.rstrip('/')
+            self.api_url = f"{self.base_url}/api/v1"
+            logger.info(f"Prometheus client initialized with URL: {self.base_url}")
+        
+        def query(self, promql: str) -> Optional[Dict]:
+            try:
+                response = requests.get(
+                    f"{self.api_url}/query",
+                    params={'query': promql},
+                    timeout=10
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if data['status'] == 'success':
+                    logger.info(f"Query successful: {promql[:50]}...")
+                    return data['data']
+                else:
+                    logger.error(f"Query failed: {data.get('error', 'Unknown error')}")
+                    return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error querying Prometheus: {e}")
+                return None
+        
+        def query_range(self, promql: str, start: datetime, end: datetime, step: str = "30s") -> Optional[Dict]:
+            try:
+                response = requests.get(
+                    f"{self.api_url}/query_range",
+                    params={
+                        'query': promql,
+                        'start': start.isoformat(),
+                        'end': end.isoformat(),
+                        'step': step
+                    },
+                    timeout=10
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if data['status'] == 'success':
+                    logger.info(f"Range query successful")
+                    return data['data']
+                else:
+                    logger.error(f"Range query failed: {data.get('error')}")
+                    return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error querying Prometheus range: {e}")
+                return None
+        
+        def get_pod_cpu_usage(self, namespace: str, pod_name: str) -> Optional[float]:
+            promql = f'sum(rate(container_cpu_usage_seconds_total{{namespace="{namespace}", pod=~"{pod_name}.*"}}[5m])) * 1000'
+            result = self.query(promql)
+            
+            if result and result.get('result'):
+                value = float(result['result'][0]['value'][1])
+                logger.info(f"CPU usage for {pod_name}: {value:.2f}m")
+                return value
+            return None
+        
+        def get_pod_memory_usage(self, namespace: str, pod_name: str) -> Optional[float]:
+            promql = f'sum(container_memory_working_set_bytes{{namespace="{namespace}", pod=~"{pod_name}.*"}}) / 1024 / 1024'
+            result = self.query(promql)
+            
+            if result and result.get('result'):
+                value = float(result['result'][0]['value'][1])
+                logger.info(f"Memory usage for {pod_name}: {value:.2f}Mi")
+                return value
+            return None
+        
+        def get_pod_restarts(self, namespace: str, pod_name: str) -> Optional[int]:
+            promql = f'kube_pod_container_status_restarts_total{{namespace="{namespace}", pod=~"{pod_name}.*"}}'
+            result = self.query(promql)
+            
+            if result and result.get('result'):
+                value = int(float(result['result'][0]['value'][1]))
+                logger.info(f"Restart count for {pod_name}: {value}")
+                return value
+            return None
+        
+        def get_namespace_metrics(self, namespace: str) -> Dict[str, Any]:
+            metrics = {}
+            
+            cpu_query = f'sum(rate(container_cpu_usage_seconds_total{{namespace="{namespace}"}}[5m])) * 1000'
+            cpu_result = self.query(cpu_query)
+            if cpu_result and cpu_result.get('result'):
+                metrics['cpu_millicores'] = float(cpu_result['result'][0]['value'][1])
+            
+            mem_query = f'sum(container_memory_working_set_bytes{{namespace="{namespace}"}}) / 1024 / 1024'
+            mem_result = self.query(mem_query)
+            if mem_result and mem_result.get('result'):
+                metrics['memory_mb'] = float(mem_result['result'][0]['value'][1])
+            
+            pod_query = f'count(kube_pod_info{{namespace="{namespace}"}})'
+            pod_result = self.query(pod_query)
+            if pod_result and pod_result.get('result'):
+                metrics['pod_count'] = int(float(pod_result['result'][0]['value'][1]))
+            
+            logger.info(f"Namespace {namespace} metrics: {metrics}")
+            return metrics
+        
+        def check_oom_kills(self, namespace: str, lookback_minutes: int = 15) -> List[Dict]:
+            promql = f'kube_pod_container_status_last_terminated_reason{{namespace="{namespace}", reason="OOMKilled"}} == 1'
+            result = self.query(promql)
+            
+            oom_kills = []
+            if result and result.get('result'):
+                for item in result['result']:
+                    oom_kills.append({
+                        'pod': item['metric'].get('pod'),
+                        'container': item['metric'].get('container'),
+                        'namespace': item['metric'].get('namespace')
+                    })
+            
+            logger.info(f"Found {len(oom_kills)} OOM kills in namespace {namespace}")
+            return oom_kills

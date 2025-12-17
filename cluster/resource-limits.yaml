@@ -1,0 +1,48 @@
+# PHASE 2 — Resource Discipline
+# Baseline resource policy to prevent OOM and etcd instability.
+# Apply to namespaces: default, apps, monitoring, ai
+# No cloud services, one change at a time.
+
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: baseline-limits
+  namespace: default
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 500m
+      memory: 300Mi
+    defaultRequest:
+      cpu: 250m
+      memory: 128Mi
+    max:
+      cpu: "2"
+      memory: 300Mi
+    min:
+      cpu: 100m
+      memory: 64Mi
+
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: baseline-quota
+  namespace: default
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 1Gi
+    limits.cpu: "4"
+    limits.memory: 2Gi
+    pods: "30"
+
+# PHASE 2 — Resource Discipline
+# - Enforces max memory per container of 300Mi
+# - Provides sane defaults for requests/limits
+# - Keep etcd/control-plane on nodes labeled `node-role=control`; workloads on `node-role=worker`.
+# Node label commands:
+#   kubectl label nodes <control-node> node-role=control --overwrite
+#   kubectl label nodes <worker-node> node-role=worker --overwrite

@@ -1,0 +1,86 @@
+# TODO: Configure application deployment parameters
+#
+# What to include in this file:
+# - Replica counts for each microservice
+# - Resource requests and limits (CPU, memory)
+# - Container images and tags
+# - Environment variables
+# - Service ports and types
+# - HPA (Horizontal Pod Autoscaler) thresholds
+# - Ingress/routing configuration
+# - ConfigMaps and Secrets references
+# - Liveness and readiness probes
+# - Node affinity and tolerations
+
+# Microservices application configuration
+# Each service deploys independently with health checks and metrics
+
+# Default global settings
+replicaCount: 1
+namespace: apps
+
+# Microservices definitions
+services:
+  users-service:
+    enabled: true
+    image: python:3.11-slim
+    port: 8001
+    replicas: 1
+  orders-service:
+    enabled: true
+    image: python:3.11-slim
+    port: 8002
+    replicas: 1
+  payments-service:
+    enabled: true
+    image: python:3.11-slim
+    port: 8003
+    replicas: 1
+  backend-api:
+    enabled: true
+    image: python:3.11-slim
+    port: 8000
+    replicas: 1
+
+# Global resource limits (all pods must stay within 300Mi per Phase 2)
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Service exposure
+service:
+  type: ClusterIP
+  metricsPort: 9090
+  targetPort: 8080
+
+# Health checks (all services expose /health and /metrics)
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 2
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 1
+
+# Environment configuration
+env:
+  - name: LOG_LEVEL
+    value: "info"
+  - name: METRICS_ENABLED
+    value: "true"
+
+# No autoscaling for now (keep simple, one change at a time)
+autoscaling:
+  enabled: false

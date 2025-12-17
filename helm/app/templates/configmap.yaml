@@ -1,0 +1,55 @@
+---
+# Simple Python microservice skeleton
+# Each service exposes /health and /metrics endpoints
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: microservices-app-code
+  namespace: {{ .Values.namespace }}
+data:
+  app.py: |
+    import os
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import json
+    
+    class ServiceHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            service_name = os.environ.get('SERVICE_NAME', 'unknown-service')
+            
+            if self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                response = {'status': 'ok', 'service': service_name}
+                self.wfile.write(json.dumps(response).encode())
+            
+            elif self.path == '/metrics':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                service_label = service_name
+                metrics = "# HELP service_requests_total Total requests\n"
+                metrics = metrics + "# TYPE service_requests_total counter\n"
+                metrics = metrics + "service_requests_total{service=\"" + service_label + "\"} 1.0\n"
+                metrics = metrics + "# HELP service_up Service up status\n"
+                metrics = metrics + "# TYPE service_up gauge\n"
+                metrics = metrics + "service_up{service=\"" + service_label + "\"} 1.0\n"
+                self.wfile.write(metrics.encode())
+            
+            else:
+                self.send_response(404)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                response = {'error': 'not found', 'path': self.path}
+                self.wfile.write(json.dumps(response).encode())
+        
+        def log_message(self, format, args):
+            pass
+    
+    if __name__ == '__main__':
+        port = int(os.environ.get('PORT', 8000))
+        server = HTTPServer(('0.0.0.0', port), ServiceHandler)
+        svc_name = os.environ.get('SERVICE_NAME', 'unknown')
+        print("Service " + svc_name + " listening on port " + str(port))
+        server.serve_forever()
+

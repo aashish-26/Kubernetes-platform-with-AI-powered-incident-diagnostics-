@@ -1,0 +1,117 @@
+# TODO: Create an artificial latency failure scenario
+#
+# What to include in this file:
+# - Deployment with container that introduces delays
+# - Readiness/liveness probes that may fail due to latency
+# - Service configuration
+# - Comments explaining the failure mechanism
+# - Expected behavior (slow responses, probe failures)
+#
+# Use this to test:
+# - AI diagnostics detection of high latency
+# - Prometheus latency metrics and alerting
+# - Istio traffic management and retries
+# - Timeout configuration recommendations
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: latency-test
+  namespace: default
+  labels:
+    app: latency-test
+    scenario: failure
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: latency-test
+  template:
+    metadata:
+      labels:
+        app: latency-test
+        scenario: failure
+    spec:
+      containers:
+      - name: slow-app
+        image: hashicorp/http-echo
+        args:
+        - "-text=Slow response after delay"
+        - "-listen=:8080"
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+        # Add artificial latency using a sidecar
+      - name: latency-injector
+        image: istio/proxy-init:1.18.0
+        command:
+        - sh
+        - -c
+        - |
+          # Simulate network latency using tc (traffic control)
+          # This adds 500ms delay to all traffic
+          apk add --no-cache iproute2
+          tc qdisc add dev eth0 root netem delay 500ms
+          sleep infinity
+        securityContext:
+          privileged: true  # Required for tc command
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+      # Probes with short timeouts will fail
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        initialDelaySeconds: 5
+        periodSeconds: 5
+        timeoutSeconds: 2  # Too short for 500ms delay
+        failureThreshold: 3
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 2  # Too short
+        failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: latency-test
+  namespace: default
+spec:
+  selector:
+    app: latency-test
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+# Expected Outcome:
+# - High response latency (500ms+)
+# - Readiness/liveness probes may fail intermittently
+# - Prometheus metrics show high latency
+# - AI diagnostics should detect latency issues
+# - Recommendations: Increase probe timeouts, investigate network
+
+# Alternative Simple Latency Test (without tc):
+# Use a container that sleeps before responding:
+# command: ["sh", "-c", "while true; do sleep 2; echo 'slow'; done"]
+
+# Debug Commands:
+# kubectl exec -it <pod-name> -- curl localhost:8080
+# Check Prometheus: histogram_quantile(0.95, rate(request_duration_seconds_bucket[5m]))

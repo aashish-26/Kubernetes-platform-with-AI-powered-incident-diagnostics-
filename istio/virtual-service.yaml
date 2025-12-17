@@ -1,0 +1,47 @@
+# Istio VirtualService: backend-api traffic routing
+# 
+# This VirtualService implements:
+# - Canary deployment: header-based routing to v2 (for testing)
+# - Weighted traffic: default 90/10 split (v1/v2)
+# - Retry policy: 3 attempts with exponential backoff
+# - Timeout: 3s per request (prevents hanging)
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: backend-api-routing
+  namespace: apps
+spec:
+  hosts:
+  - backend-api.apps.svc.cluster.local
+  http:
+  # Sticky canary: explicit header routes 100% to v2 (for testing)
+  - match:
+    - headers:
+        x-canary:
+          exact: "true"
+    route:
+    - destination:
+        host: backend-api.apps.svc.cluster.local
+        subset: v2
+      weight: 100
+    timeout: 3s
+    retries:
+      attempts: 3
+      perTryTimeout: 1s
+      retryOn: 5xx,connect-failure,reset
+  # Default traffic: weighted split v1/v2 (90% stable, 10% canary)
+  - route:
+    - destination:
+        host: backend-api.apps.svc.cluster.local
+        subset: v1
+      weight: 90
+    - destination:
+        host: backend-api.apps.svc.cluster.local
+        subset: v2
+      weight: 10
+    timeout: 3s
+    retries:
+      attempts: 3
+      perTryTimeout: 1s
+      retryOn: 5xx,connect-failure,reset

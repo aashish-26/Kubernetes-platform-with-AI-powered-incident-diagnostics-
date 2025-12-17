@@ -1,0 +1,49 @@
+# Istio DestinationRule: backend-api policies
+#
+# This DestinationRule defines:
+# - mTLS: Mutual TLS between all services (ISTIO_MUTUAL)
+# - Load Balancing: LEAST_REQUEST algorithm
+# - Circuit Breaker: Eject pods after 3 consecutive 5xx errors for 30s
+# - Outlier Detection: Max 50% of pods can be ejected
+# - Connection Pool: Limits TCP/HTTP connection counts and request rates
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: backend-api-dr
+  namespace: apps
+spec:
+  host: backend-api.apps.svc.cluster.local
+  trafficPolicy:
+    # mTLS enforcement: all traffic encrypted and authenticated
+    tls:
+      mode: ISTIO_MUTUAL
+    # Load Balancing: distribute based on active request count
+    loadBalancer:
+      simple: LEAST_REQUEST
+    # Connection Pool: rate limiting to prevent resource exhaustion
+    connectionPool:
+      tcp:
+        maxConnections: 50
+        connectTimeout: 5s
+      http:
+        http1MaxPendingRequests: 20
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 1
+        maxRetries: 3
+    # Outlier Detection: circuit breaker pattern
+    outlierDetection:
+      consecutive5xxErrors: 3  # Eject after 3 errors
+      interval: 15s             # Check every 15s
+      baseEjectionTime: 30s     # Min ejection duration
+      maxEjectionPercent: 50    # Max 50% ejected
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN

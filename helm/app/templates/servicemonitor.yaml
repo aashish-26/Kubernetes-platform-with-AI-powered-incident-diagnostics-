@@ -1,0 +1,23 @@
+# ServiceMonitors for microservices to expose metrics to Prometheus
+# Apply with: kubectl apply -f servicemonitors.yaml
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: microservices-metrics
+  namespace: apps
+  labels:
+    app: microservices
+    release: prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      release: microservices
+  namespaceSelector:
+    matchNames:
+    - apps
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s

@@ -1,0 +1,87 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-diagnostics
+  namespace: ai
+  labels:
+    app: ai-diagnostics
+    phase: "7-ai-diagnostics"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-diagnostics
+  template:
+    metadata:
+      labels:
+        app: ai-diagnostics
+    spec:
+      serviceAccountName: ai-diagnostics
+      containers:
+      - name: ai
+        image: python:3.11-slim
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command:
+        - bash
+        - -c
+        - |
+          pip install --no-cache-dir fastapi uvicorn kubernetes requests pydantic && \
+          uvicorn ai.app:app --host 0.0.0.0 --port 8000 --log-level info
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: K8S_IN_CLUSTER
+          value: "true"
+        - name: LOG_LEVEL
+          value: "INFO"
+        volumeMounts:
+        - name: code
+          mountPath: /app
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+      volumes:
+      - name: code
+        configMap:
+          name: ai-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-diagnostics
+  namespace: ai
+  labels:
+    app: ai-diagnostics
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-diagnostics
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+    protocol: TCP

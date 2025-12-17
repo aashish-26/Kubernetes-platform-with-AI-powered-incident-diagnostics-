@@ -1,0 +1,43 @@
+# TODO: Create Horizontal Pod Autoscaler manifest template
+#
+# What to include in this file:
+# - HPA resource with proper references to Deployment
+# - Min/max replica counts from values.yaml
+# - CPU and memory utilization thresholds
+# - Scale-up and scale-down behavior policies
+# - Custom metrics (if using custom metrics API)
+
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "microservices-app.fullname" . }}
+  labels:
+    app: {{ include "microservices-app.name" . }}
+    chart: {{ include "microservices-app.chart" . }}
+    release: {{ .Release.Name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "microservices-app.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+  {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  {{- end }}
+  {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+  {{- end }}
+{{- end }}

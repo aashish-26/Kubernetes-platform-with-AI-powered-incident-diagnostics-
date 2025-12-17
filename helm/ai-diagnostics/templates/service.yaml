@@ -1,0 +1,26 @@
+# TODO: Create AI diagnostics service Service manifest
+#
+# What to include in this file:
+# - Service resource exposing AI diagnostics endpoints
+# - Port configuration (typically 8000 for Python services)
+# - Proper selectors matching the Deployment
+# - Service type (ClusterIP for internal access)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-diagnostics.fullname" . }}
+  labels:
+    app: {{ include "ai-diagnostics.name" . }}
+    chart: {{ include "ai-diagnostics.chart" . }}
+    release: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: {{ .Values.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    app: {{ include "ai-diagnostics.name" . }}
+    release: {{ .Release.Name }}

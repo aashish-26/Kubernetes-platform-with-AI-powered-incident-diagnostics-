@@ -1,0 +1,126 @@
+# PHASE 6 — Observability Stack
+# Prometheus & Grafana with resource discipline (300Mi limit)
+# Use with: helm install prometheus-stack prometheus-community/kube-prometheus-stack -f values.yaml -n monitoring
+
+# Global settings
+namespaceOverride: "monitoring"
+
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    retention: 6h  # Short retention for local/ephemeral storage
+    storageSpec: {}  # Disable persistent storage (use emptyDir)
+    # Resource limits (under 300Mi)
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    
+    # Scrape configs for apps namespace
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    
+# Grafana configuration
+grafana:
+  enabled: true
+  adminPassword: "admin"  # Change in production
+  
+  persistence:
+    enabled: true  # Enable to persist Grafana state and dashboards
+    storageClassName: null  # Use default storage (emptyDir)
+    size: 1Gi
+    mountPath: /var/lib/grafana
+
+  # Mount emptyDir for dashboards to persist across restarts and prevent provisioning errors
+  extraVolumes:
+    - name: grafana-dashboards-default
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: grafana-dashboards-default
+      mountPath: /var/lib/grafana/dashboards/default
+  
+  # Resource limits (under 300Mi)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  
+  # Datasource pre-configured for Prometheus
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-stack-kube-prom-prometheus:9090
+        access: proxy
+        isDefault: true
+  
+  # Dashboard providers (uses emptyDir mount to avoid provisioning errors)
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default  # Path backed by emptyDir volume
+
+# AlertManager configuration (lightweight)
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'cluster']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'null'
+    receivers:
+    - name: 'null'
+
+# Prometheus Operator
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Node Exporter (lightweight, no limits to avoid node issues)
+nodeExporter:
+  enabled: true
+
+# Kube State Metrics
+kubeStateMetrics:
+  enabled: true
+
+# Disable heavy components
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
